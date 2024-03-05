@@ -36,7 +36,7 @@ fun VersionCatalogBuilder.spring() {
 }
 
 fun VersionCatalogBuilder.voice() {
-    version("lavaplayer", "2.0.4")
+    version("lavaplayer", "2.1.0")
 
     library("lavaplayer",            "dev.arbjerg", "lavaplayer").versionRef("lavaplayer")
     library("lavaplayer-ip-rotator", "dev.arbjerg", "lavaplayer-ext-youtube-rotator").versionRef("lavaplayer")
@@ -76,7 +76,7 @@ fun VersionCatalogBuilder.common() {
 
     library("logback",        "ch.qos.logback",       "logback-classic").version("1.4.7")
     library("sentry-logback", "io.sentry",            "sentry-logback").version("6.22.0")
-    library("oshi",           "com.github.oshi",      "oshi-core").version("6.4.3")
+    library("oshi",           "com.github.oshi",      "oshi-core").version("6.4.11")
 }
 
 fun VersionCatalogBuilder.other() {

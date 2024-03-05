@@ -10,20 +10,22 @@ import java.io.InputStream
 import java.net.URL
 import java.net.URLClassLoader
 import java.nio.channels.Channels
-import java.nio.file.Files
 import java.util.*
 import java.util.jar.JarFile
-import java.util.regex.Pattern
-
 
 @SpringBootApplication
 class PluginManager(val config: PluginsConfig) {
+    companion object {
+        private val log: Logger = LoggerFactory.getLogger(PluginManager::class.java)
+    }
 
     final val pluginManifests: MutableList<PluginManifest> = mutableListOf()
-    var classLoader: ClassLoader = PluginManager::class.java.classLoader
+
+    var classLoader = javaClass.classLoader
 
     init {
         manageDownloads()
+
         pluginManifests.apply {
             addAll(readClasspathManifests())
             addAll(loadJars())
@@ -32,53 +34,61 @@ class PluginManager(val config: PluginsConfig) {
 
     private fun manageDownloads() {
         if (config.plugins.isEmpty()) return
+
         val directory = File(config.pluginsDir)
         directory.mkdir()
 
-        data class PluginJar(val name: String, val version: String, val file: File)
-
-        val pattern = Pattern.compile("(.+)-(.+)\\.jar$")
-        val pluginJars = directory.listFiles()!!.mapNotNull { f ->
-            val matcher = pattern.matcher(f.name)
-            if (!matcher.find()) return@mapNotNull null
-            PluginJar(matcher.group(1), matcher.group(2), f)
-        }
-
-        data class Declaration(val group: String, val name: String, val version: String, val repository: String)
+        val pluginJars = directory.listFiles()?.filter { it.extension == "jar" }
+            ?.flatMap { file ->
+                JarFile(file).use { jar ->
+                    loadPluginManifests(jar).map { manifest -> PluginJar(manifest, file) }
+                }
+            }
+            ?.onEach { log.info("Found plugin '${it.manifest.name}' version ${it.manifest.version}") }
+            ?: return
 
         val declarations = config.plugins.map { declaration ->
             if (declaration.dependency == null) throw RuntimeException("Illegal dependency declaration: null")
             val fragments = declaration.dependency!!.split(":")
             if (fragments.size != 3) throw RuntimeException("Invalid dependency \"${declaration.dependency}\"")
 
-            var repository = declaration.repository
-                ?: if (declaration.snapshot) config.defaultPluginSnapshotRepository else config.defaultPluginRepository
-            repository = if (repository.endsWith("/")) repository else "$repository/"
-            Declaration(fragments[0], fragments[1], fragments[2], repository)
-        }
+            val repository = declaration.repository
+                ?: config.defaultPluginSnapshotRepository.takeIf { declaration.snapshot }
+                ?: config.defaultPluginRepository
 
-        declarations.forEach declarationLoop@{ declaration ->
-            pluginJars.forEach { jar ->
-                if (declaration.name == jar.name) {
-                    if (declaration.version == jar.version) {
-                        // We already have this jar so don't redownload it
-                        return@declarationLoop
-                    }
+            Declaration(fragments[0], fragments[1], fragments[2], "${repository.removeSuffix("/")}/")
+        }.distinctBy { "${it.group}:${it.name}" }
 
-                    // Delete jar of different versions
-                    if (!jar.file.delete()) throw RuntimeException("Failed to delete ${jar.file.path}")
-                    log.info("Deleted ${jar.file.path}")
+        for (declaration in declarations) {
+            val jars = pluginJars.filter { it.manifest.name == declaration.name }.takeIf { it.isNotEmpty() }
+                ?: pluginJars.filter { matchName(it, declaration.name) }
+
+            var hasCurrentVersion = false
+
+            for (jar in jars) {
+                if (jar.manifest.version == declaration.version) {
+                    hasCurrentVersion = true
+                    // Don't clean up the jar if it's a current version.
+                    continue
                 }
+
+                // Delete versions of the plugin that aren't the same as declared version.
+                if (!jar.file.delete()) throw RuntimeException("Failed to delete ${jar.file.path}")
+                log.info("Deleted ${jar.file.path} (new version: ${declaration.version})")
+
             }
 
-            val url = declaration.run { "$repository${group.replace(".", "/")}/$name/$version/$name-$version.jar" }
-            val file = File(directory, declaration.run { "$name-$version.jar" })
-            downloadJar(file, url)
+            if (!hasCurrentVersion) {
+                val url = declaration.url
+                val file = File(directory, declaration.canonicalJarName)
+                downloadJar(file, url)
+            }
         }
     }
 
     private fun downloadJar(output: File, url: String) {
         log.info("Downloading $url")
+
         Channels.newChannel(URL(url).openStream()).use {
             FileOutputStream(output).channel.transferFrom(it, 0, Long.MAX_VALUE)
         }
@@ -87,69 +97,57 @@ class PluginManager(val config: PluginsConfig) {
     private fun readClasspathManifests(): List<PluginManifest> {
         return PathMatchingResourcePatternResolver()
             .getResources("classpath*:lavalink-plugins/*.properties")
-            .map { r -> parsePluginManifest(r.inputStream) }
+            .map { parsePluginManifest(it.inputStream) }
+            .onEach { log.info("Found plugin '${it.name}' version ${it.version}") }
     }
 
     private fun loadJars(): List<PluginManifest> {
-        val directory = File(config.pluginsDir)
-        if (!directory.isDirectory) return emptyList()
-        val jarsToLoad = mutableListOf<File>()
+        val directory = File(config.pluginsDir).takeIf { it.isDirectory }
+            ?: return emptyList()
 
-        Files.list(File(config.pluginsDir).toPath()).forEach { path ->
-            val file = path.toFile()
-            if (!file.isFile) return@forEach
-            if (file.extension != "jar") return@forEach
-            jarsToLoad.add(file)
-        }
+        val jarsToLoad = directory.listFiles()?.filter { it.isFile && it.extension == "jar" }
+            ?.takeIf { it.isNotEmpty() }
+            ?: return emptyList()
 
-        if (jarsToLoad.isEmpty()) return emptyList()
-
-        val cl = URLClassLoader.newInstance(
+        classLoader = URLClassLoader.newInstance(
             jarsToLoad.map { URL("jar:file:${it.absolutePath}!/") }.toTypedArray(),
             javaClass.classLoader
         )
-        classLoader = cl
 
-        val manifests = mutableListOf<PluginManifest>()
+        return jarsToLoad.flatMap { loadJar(it, classLoader) }
+    }
 
-        jarsToLoad.forEach { file ->
-            try {
-                manifests.addAll(loadJar(file, cl))
-            } catch (e: Exception) {
-                throw RuntimeException("Error loading $file", e)
+    private fun loadJar(file: File, cl: ClassLoader): List<PluginManifest> {
+        val jar = JarFile(file)
+        val manifests = loadPluginManifests(jar)
+        var classCount = 0
+
+        jar.use {
+            if (manifests.isEmpty()) {
+                throw RuntimeException("No plugin manifest found in ${file.path}")
+            }
+
+            val allowedPaths = manifests.map { manifest -> manifest.path.replace(".", "/") }
+
+            for (entry in it.entries()) {
+                if (entry.isDirectory ||
+                    !entry.name.endsWith(".class") ||
+                    allowedPaths.none(entry.name::startsWith)) continue
+
+                cl.loadClass(entry.name.dropLast(6).replace("/", "."))
+                classCount++
             }
         }
 
-
+        log.info("Loaded ${file.name} ($classCount classes)")
         return manifests
     }
 
-    private fun loadJar(file: File, cl: URLClassLoader): MutableList<PluginManifest> {
-        var classCount = 0
-        val jar = JarFile(file)
-        val manifests = mutableListOf<PluginManifest>()
-
-        jar.entries().asIterator().forEach { entry ->
-            if (entry.isDirectory) return@forEach
-            if (!entry.name.startsWith("lavalink-plugins/")) return@forEach
-            if (!entry.name.endsWith(".properties")) return@forEach
-            manifests.add(parsePluginManifest(jar.getInputStream(entry)))
-        }
-
-        if (manifests.isEmpty()) {
-            throw RuntimeException("No plugin manifest found in ${file.path}")
-        }
-        val allowedPaths = manifests.map { it.path.replace(".", "/") }
-
-        jar.entries().asIterator().forEach { entry ->
-            if (entry.isDirectory) return@forEach
-            if (!entry.name.endsWith(".class")) return@forEach
-            if (!allowedPaths.any { entry.name.startsWith(it) }) return@forEach
-            cl.loadClass(entry.name.dropLast(6).replace("/", "."))
-            classCount++
-        }
-        log.info("Loaded ${file.name} ($classCount classes)")
-        return manifests
+    private fun loadPluginManifests(jar: JarFile): List<PluginManifest> {
+        return jar.entries().asSequence()
+            .filter { !it.isDirectory && it.name.startsWith("lavalink-plugins/") && it.name.endsWith(".properties") }
+            .map { parsePluginManifest(jar.getInputStream(it)) }
+            .toList()
     }
 
     private fun parsePluginManifest(stream: InputStream): PluginManifest {
@@ -160,11 +158,24 @@ class PluginManager(val config: PluginsConfig) {
         val name = props.getProperty("name") ?: throw RuntimeException("Manifest is missing 'name'")
         val path = props.getProperty("path") ?: throw RuntimeException("Manifest is missing 'path'")
         val version = props.getProperty("version") ?: throw RuntimeException("Manifest is missing 'version'")
-        log.info("Found plugin '$name' version $version")
         return PluginManifest(name, path, version)
     }
 
-    companion object {
-        private val log: Logger = LoggerFactory.getLogger(PluginManager::class.java)
+    private fun matchName(jar: PluginJar, name: String): Boolean {
+        // removeSuffix removes names ending with "-v", such as -v1.0.0
+        // and then the subsequent removeSuffix call removes trailing "-", which
+        // usually precedes a version number, such as my-plugin-1.0.0.
+        // We strip these to produce the name of the jar's file.
+        val jarName = jar.file.nameWithoutExtension.takeWhile { !it.isDigit() }
+            .removeSuffix("-v")
+            .removeSuffix("-")
+
+        return name == jarName
+    }
+
+    private data class PluginJar(val manifest: PluginManifest, val file: File)
+    private data class Declaration(val group: String, val name: String, val version: String, val repository: String) {
+        val canonicalJarName = "$name-$version.jar"
+        val url = "$repository${group.replace(".", "/")}/$name/$version/$name-$version.jar"
     }
 }
