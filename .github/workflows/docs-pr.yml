@@ -17,15 +17,14 @@ jobs:
       contents: read
       deployments: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           ref: "${{ github.event.pull_request.merge_commit_sha }}"
-          fetch-depth: 0
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: 3.x
       - run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_ENV
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           key: mkdocs-material-${{ env.cache_id }}
           path: .cache
@@ -36,10 +35,10 @@ jobs:
 #      - run: mkdocs build --verbose --strict
       - run: mkdocs build --verbose
         working-directory: docs
-      - uses: actions/upload-pages-artifact@v1
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: 'site'
-      - uses: cloudflare/pages-action@v1
+      - uses: topi314/pages-action@989c0bd3a707c425c05f802dd9984387be67e82b
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -47,3 +46,4 @@ jobs:
           directory: site
           branch: pr-${{ github.event.pull_request.number }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          deploymentRef: ${{ github.event.pull_request.merge_commit_sha }}

@@ -53,10 +53,10 @@ When Lavalink encounters an error, it will respond with a JSON object containing
 
 #### Track
 
-| Field      | Type                             | Description                                                                   |
-|------------|----------------------------------|-------------------------------------------------------------------------------|
-| encoded    | string                           | The base64 encoded track data                                                 |
-| info       | [Track Info](#track-info) object | Info about the track                                                          |
+| Field      | Type                             | Description                                                                     |
+|------------|----------------------------------|---------------------------------------------------------------------------------|
+| encoded    | string                           | The base64 encoded track data                                                   |
+| info       | [Track Info](#track-info) object | Info about the track                                                            |
 | pluginInfo | object                           | Additional track info provided by plugins                                       |
 | userData   | object                           | Additional track data provided via the [Update Player](#update-player) endpoint |
 
@@ -629,7 +629,7 @@ GET /v4/sessions/{sessionId}/players/{guildId}
 
 Response:
 
-[Player](#Player) object
+[Player](#player) object
 
 <details markdown="1">
 <summary>Example Payload</summary>
@@ -751,7 +751,7 @@ When `identifier` is used, Lavalink will try to resolve the identifier as a sing
 
 Response:
 
-[Player](#Player) object
+[Player](#player) object
 
 <details markdown="1">
 <summary>Example Payload</summary>
@@ -917,7 +917,7 @@ Parsed [Semantic Versioning 2.0.0](https://semver.org/)
 ```json
 {
   "version": {
-    "string": "3.7.0-rc.1+test",
+    "semver": "3.7.0-rc.1+test",
     "major": 3,
     "minor": 7,
     "patch": 0,
@@ -1072,7 +1072,11 @@ Additionally, there are a few REST endpoints for the ip rotation extension.
 GET /v4/routeplanner/status
 ```
 
-Response:
+Responses:
+
+204 - No Content: This means the RoutePlanner is not enabled on the server.
+
+200 - Content: This means that the RoutePlanner has been enabled, and will give the following information.
 
 | Field   | Type                                        | Description                                                           |
 |---------|---------------------------------------------|-----------------------------------------------------------------------|
