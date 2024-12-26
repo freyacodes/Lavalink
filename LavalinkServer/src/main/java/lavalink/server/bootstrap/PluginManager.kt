@@ -9,9 +9,12 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.URL
 import java.net.URLClassLoader
+import java.net.HttpURLConnection
 import java.nio.channels.Channels
 import java.util.*
 import java.util.jar.JarFile
+import javax.xml.parsers.DocumentBuilderFactory
+import dev.arbjerg.lavalink.protocol.v4.Version
 
 @SpringBootApplication
 class PluginManager(val config: PluginsConfig) {
@@ -82,6 +85,34 @@ class PluginManager(val config: PluginsConfig) {
                 val url = declaration.url
                 val file = File(directory, declaration.canonicalJarName)
                 downloadJar(file, url)
+            }
+
+            checkPluginForUpdates(declaration)
+        }
+    }
+
+    private fun checkPluginForUpdates(declaration: Declaration) {
+        val splitPath = declaration.url.split('/')
+
+        val baseSplitPath = splitPath.dropLast(2)
+        val basePath = baseSplitPath.joinToString("/") + "/maven-metadata.xml"
+        val documentBuilder = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+        val document = documentBuilder.parse(basePath)
+
+        var elements = document.getElementsByTagName("latest")
+        if(elements.length == 0) {
+            elements = document.getElementsByTagName("release")
+        }
+
+        if (elements.length > 0) {
+            val latest = elements.item(0).textContent
+            val latestVersion = Version.fromSemver(latest)
+            val currentVersion = Version.fromSemver(declaration.version)
+            if(latestVersion > currentVersion) {
+                log.warn("A newer version of ${declaration.name} was found: $latestVersion, " +
+                        "The current version is $currentVersion")
+            } else {
+                log.info("Plugin ${declaration.name} is up to date")
             }
         }
     }
